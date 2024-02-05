@@ -43,7 +43,7 @@ void execute_with_pipe(char** arglist, int pipe_pos, int count) {
         // Child process 1
         if (sigaction(SIGINT, &sa, NULL) == -1) {
                 perror("sigaction");
-                return EXIT_FAILURE;
+                exit(EXIT_FAILURE);
             }
         close(fd[0]); // Close unused read end
         dup2(fd[1], STDOUT_FILENO); // Redirect stdout to pipe write end
@@ -65,7 +65,7 @@ void execute_with_pipe(char** arglist, int pipe_pos, int count) {
             // Child process 2
             if (sigaction(SIGINT, &sa, NULL) == -1) {
                 perror("sigaction");
-                return EXIT_FAILURE;
+                exit(EXIT_FAILURE);
             }
             close(fd[1]); // Close unused write end
             dup2(fd[0], STDIN_FILENO); // Redirect stdin to pipe read end
@@ -161,7 +161,7 @@ int process_arglist(int count, char** arglist) {
         if (!background) {
             if (sigaction(SIGINT, &sa_default, NULL) == -1) {
                 perror("sigaction");
-                return EXIT_FAILURE;
+                exit(EXIT_FAILURE);
             }
         }
         execvp(arglist[0], arglist);
@@ -170,13 +170,29 @@ int process_arglist(int count, char** arglist) {
     } else {
         if (!background) {
             int status;
-            if (sigaction(SIGINT, &sa_ignore, NULL) == -1) {
-                perror("sigaction");
-                return EXIT_FAILURE;
-            }
+            // if (sigaction(SIGINT, &sa_ignore, NULL) == -1) {
+            //     perror("sigaction");
+            //     exit(EXIT_FAILURE);
+            // }
             waitpid(pid, &status, 0); // Wait for the child to finish
         }
     }
     return 1; // Indicate success
 }
 
+int finalize(void) {
+    int status;
+    pid_t pid;
+
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        // Optionally, print out the PID of each child process that was reaped
+        printf("Reaped child process PID: %d\n", pid);
+    }
+
+    if (pid == -1 && errno != ECHILD) {
+        perror("waitpid");
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
