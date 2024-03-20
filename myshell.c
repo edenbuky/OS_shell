@@ -13,10 +13,11 @@ int prepare(void){
     struct sigaction sa;
     
     sa.sa_handler = SIG_IGN;
+    sa.sa_flags = SA_RESTART;
     sigfillset(&sa.sa_mask);
 
     if (sigaction(SIGINT, &sa, NULL) == -1) {
-        perror("sigaction");
+        perror("sigaction failed");
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;
@@ -42,14 +43,14 @@ void execute_with_pipe(char** arglist, int pipe_pos, int count) {
     if (pid1 == 0) {
         // Child process 1
         if (sigaction(SIGINT, &sa, NULL) == -1) {
-                perror("sigaction");
+                perror("sigaction failed");
                 exit(EXIT_FAILURE);
             }
-        close(fd[0]); // Close unused read end
-        dup2(fd[1], STDOUT_FILENO); // Redirect stdout to pipe write end
+        close(fd[0]);
+        dup2(fd[1], STDOUT_FILENO);
         close(fd[1]);
 
-        arglist[pipe_pos] = NULL; // Split the arglist at the pipe position
+        arglist[pipe_pos] = NULL;
         execvp(arglist[0], arglist);
         perror("execvp failed");
         exit(EXIT_FAILURE);
@@ -64,11 +65,11 @@ void execute_with_pipe(char** arglist, int pipe_pos, int count) {
         if (pid2 == 0) {
             // Child process 2
             if (sigaction(SIGINT, &sa, NULL) == -1) {
-                perror("sigaction");
+                perror("sigaction failed");
                 exit(EXIT_FAILURE);
             }
-            close(fd[1]); // Close unused write end
-            dup2(fd[0], STDIN_FILENO); // Redirect stdin to pipe read end
+            close(fd[1]);
+            dup2(fd[0], STDIN_FILENO);
             close(fd[0]);
 
             execvp(arglist[pipe_pos + 1], &arglist[pipe_pos + 1]);
@@ -78,35 +79,49 @@ void execute_with_pipe(char** arglist, int pipe_pos, int count) {
             // Parent process
             close(fd[0]);
             close(fd[1]);
-            waitpid(pid1, NULL, 0); // Wait for first child to finish
-            waitpid(pid2, NULL, 0); // Wait for second child to finish
+            waitpid(pid1, NULL, 0);
+            waitpid(pid2, NULL, 0);
         }
     }
 }
-void redirect_input(const char* file) {
-    int fd = open(file, O_RDONLY);
+void redirect_type_and_execute(char **arglist, const char *file, int type) {
+    int fd;
+    if (type == 0){
+        fd = open(file, O_RDONLY);
+    }
+    else{
+        fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    }
     if (fd == -1) {
         perror("Failed to open input file");
-        exit(EXIT_FAILURE);
+        return;
     }
-    if (dup2(fd, STDIN_FILENO) == -1) {
-        perror("Failed to redirect standard input");
-        exit(EXIT_FAILURE);
-    }
-    close(fd);
-}
+    int copy = dup(type);
 
-void redirect_output(const char* file) {
-    int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd == -1) {
-        perror("Failed to open output file");
-        exit(EXIT_FAILURE);
-    }
-    if (dup2(fd, STDOUT_FILENO) == -1) {
-        perror("Failed to redirect standard output");
-        exit(EXIT_FAILURE);
+    if (dup2(fd, type) == -1) {
+        perror("Failed to redirect standard input");
+        close(fd);
+        return;
     }
     close(fd);
+
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        perror("fork failed");
+        exit(EXIT_FAILURE);
+    } else if (pid == 0) { // Child process
+        execvp(arglist[0], arglist);
+        perror("execvp failed");
+        exit(EXIT_FAILURE);
+    } else { // Parent process
+        int status;
+        waitpid(pid, &status, 0);
+
+        
+        dup2(copy, type);
+        close(copy);
+    }
 }
 
 int process_arglist(int count, char** arglist) {
@@ -129,8 +144,7 @@ int process_arglist(int count, char** arglist) {
         arglist[count-1] = NULL; // Remove "&" from the arguments
         count--; // Adjust count to ignore "&"
     }
-
-    //Check if the arglist contain is "|" 
+ 
     for (int i = 0; i < count; i++) {
          //Check if the arglist contain is "|", and execute pipe 
         if (strcmp(arglist[i], "|") == 0) {
@@ -139,15 +153,15 @@ int process_arglist(int count, char** arglist) {
         }
         //Check if the arglist contain is "<", and execute Input redirecting 
         if (strcmp(arglist[i], "<") == 0 && strcmp(arglist[i+1], "<") != 0) {
-            redirect_input(arglist[i+1]);
             arglist[i] = NULL;
-            break;
+            redirect_type_and_execute(arglist, arglist[i+1], 0);
+            return 1;
         }
-        //Check if the arglist contain is ">", and execute Output redirecting.
+        //Check if the arglist contain is ">", and execute Output redirecting
         if (strcmp(arglist[i], ">") == 0 && strcmp(arglist[i+1], ">") != 0) {
-            redirect_output(arglist[i+1]);
             arglist[i] = NULL;
-            break;
+            redirect_type_and_execute(arglist, arglist[i+1], 1);
+            return 1;
         }
     }
     
@@ -160,36 +174,33 @@ int process_arglist(int count, char** arglist) {
     else if (pid == 0) {        // Child process
         if (!background) {
             if (sigaction(SIGINT, &sa_default, NULL) == -1) {
-                perror("sigaction");
+                perror("sigaction failed");
                 exit(EXIT_FAILURE);
             }
         }
         execvp(arglist[0], arglist);
-        perror("execvp failed"); // execvp only returns on error
+        perror("execvp failed");
         exit(EXIT_FAILURE);
     } else {
         if (!background) {
             int status;
-            // if (sigaction(SIGINT, &sa_ignore, NULL) == -1) {
-            //     perror("sigaction");
-            //     exit(EXIT_FAILURE);
-            // }
-            waitpid(pid, &status, 0); // Wait for the child to finish
+            waitpid(pid, &status, 0);
+            if (pid == -1 && errno != ECHILD && errno != EINTR) {
+                perror("waitpid");
+                exit(EXIT_FAILURE);
+            }
         }
     }
-    return 1; // Indicate success
+    return 1; 
 }
 
 int finalize(void) {
     int status;
     pid_t pid;
 
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        // Optionally, print out the PID of each child process that was reaped
-        printf("Reaped child process PID: %d\n", pid);
-    }
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) { }
 
-    if (pid == -1 && errno != ECHILD) {
+    if (pid == -1 && errno != ECHILD && errno != EINTR) {
         perror("waitpid");
         return EXIT_FAILURE;
     }
