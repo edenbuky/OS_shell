@@ -61,13 +61,13 @@ To compile the program, use the following command:
 
 ```bash
 gcc -O3 -D_POSIX_C_SOURCE=200809 -Wall -std=c11 shell.c myshell.c -o myshell
-
+```
 ## Usage
 To run the shell:
 
 ```bash
 ./myshell
-
+```
 You can then enter commands, including piping, background execution, and redirection.
 
 
