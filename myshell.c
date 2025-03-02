@@ -8,13 +8,13 @@
 #include <fcntl.h>
 #include <signal.h>
 
-
+// Initializes signal handling for SIGINT (Ctrl+C)
 int prepare(void){
     struct sigaction sa;
     
-    sa.sa_handler = SIG_IGN;
-    sa.sa_flags = SA_RESTART;
-    sigfillset(&sa.sa_mask);
+    sa.sa_handler = SIG_IGN; // Ignore SIGINT (Ctrl+C) in the parent shell
+    sa.sa_flags = SA_RESTART; // Restart system calls after the signal
+    sigfillset(&sa.sa_mask); // Block all signals during the handler
 
     if (sigaction(SIGINT, &sa, NULL) == -1) {
         perror("sigaction failed");
@@ -23,13 +23,14 @@ int prepare(void){
     return EXIT_SUCCESS;
 }
 
+// Handles piping between two commands in a single process chain
 void execute_with_pipe(char** arglist, int pipe_pos, int count) {
     int fd[2];
     pid_t pid1, pid2;
     struct sigaction sa;
-    sa.sa_handler = SIG_DFL;
+    sa.sa_handler = SIG_DFL; // Default signal handler for child processes
 
-    if (pipe(fd) == -1) {
+    if (pipe(fd) == -1) { // Child process 1 (before the pipe)
         perror("pipe failed");
         exit(EXIT_FAILURE);
     }
@@ -46,15 +47,15 @@ void execute_with_pipe(char** arglist, int pipe_pos, int count) {
                 perror("sigaction failed");
                 exit(EXIT_FAILURE);
             }
-        close(fd[0]);
-        dup2(fd[1], STDOUT_FILENO);
+        close(fd[0]); // Close reading end of pipe
+        dup2(fd[1], STDOUT_FILENO); // Redirect stdout to the pipe
         close(fd[1]);
 
         arglist[pipe_pos] = NULL;
-        execvp(arglist[0], arglist);
+        execvp(arglist[0], arglist); // Execute the first command
         perror("execvp failed");
         exit(EXIT_FAILURE);
-    } else {
+    } else { // Parent process
         // Parent process
         pid2 = fork();
         if (pid2 == -1) {
@@ -62,43 +63,45 @@ void execute_with_pipe(char** arglist, int pipe_pos, int count) {
             exit(EXIT_FAILURE);
         }
 
-        if (pid2 == 0) {
+        if (pid2 == 0) { // Child process 2 (after the pipe)
             // Child process 2
             if (sigaction(SIGINT, &sa, NULL) == -1) {
                 perror("sigaction failed");
                 exit(EXIT_FAILURE);
             }
-            close(fd[1]);
+            close(fd[1]);  // Close writing end of pipe
             dup2(fd[0], STDIN_FILENO);
             close(fd[0]);
 
-            execvp(arglist[pipe_pos + 1], &arglist[pipe_pos + 1]);
+            execvp(arglist[pipe_pos + 1], &arglist[pipe_pos + 1]); // Execute second command
             perror("execvp failed");
             exit(EXIT_FAILURE);
-        } else {
+        } else { // Parent process waits for both children
             // Parent process
             close(fd[0]);
             close(fd[1]);
-            waitpid(pid1, NULL, 0);
-            waitpid(pid2, NULL, 0);
+            waitpid(pid1, NULL, 0); // Wait for first child
+            waitpid(pid2, NULL, 0); // Wait for second child
         }
     }
 }
+
+// Handles input/output redirection and executes the command
 void redirect_type_and_execute(char **arglist, const char *file, int type) {
     int fd;
     if (type == 0){
-        fd = open(file, O_RDONLY);
+        fd = open(file, O_RDONLY); // Input redirection
     }
     else{
-        fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644); // Output redirection
     }
     if (fd == -1) {
         perror("Failed to open input file");
         return;
     }
-    int copy = dup(type);
+    int copy = dup(type); // Save the original file descriptor
 
-    if (dup2(fd, type) == -1) {
+    if (dup2(fd, type) == -1) { // Redirect stdin/stdout
         perror("Failed to redirect standard input");
         close(fd);
         return;
@@ -111,19 +114,18 @@ void redirect_type_and_execute(char **arglist, const char *file, int type) {
         perror("fork failed");
         exit(EXIT_FAILURE);
     } else if (pid == 0) { // Child process
-        execvp(arglist[0], arglist);
+        execvp(arglist[0], arglist); // Execute the command
         perror("execvp failed");
         exit(EXIT_FAILURE);
     } else { // Parent process
         int status;
-        waitpid(pid, &status, 0);
-
-        
-        dup2(copy, type);
+        waitpid(pid, &status, 0); // Wait for child to finish
+        dup2(copy, type); // Restore original file descriptor
         close(copy);
     }
 }
 
+// Processes arguments, handles background execution, pipes, and redirection
 int process_arglist(int count, char** arglist) {
     int background = 0;
     pid_t pid;
@@ -178,13 +180,13 @@ int process_arglist(int count, char** arglist) {
                 exit(EXIT_FAILURE);
             }
         }
-        execvp(arglist[0], arglist);
+        execvp(arglist[0], arglist);     // Execute the command
         perror("execvp failed");
         exit(EXIT_FAILURE);
     } else {
         if (!background) {
             int status;
-            waitpid(pid, &status, 0);
+            waitpid(pid, &status, 0);    // Wait for child to finish
             if (pid == -1 && errno != ECHILD && errno != EINTR) {
                 perror("waitpid");
                 exit(EXIT_FAILURE);
@@ -193,7 +195,7 @@ int process_arglist(int count, char** arglist) {
     }
     return 1; 
 }
-
+// Final cleanup function, waits for all child processes
 int finalize(void) {
     int status;
     pid_t pid;
